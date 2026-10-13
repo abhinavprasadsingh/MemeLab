@@ -24,7 +24,6 @@ STYLES = {
     "Relatable": "painfully relatable everyday life, student and social situations",
     "Dramatic": "over-the-top cinematic melodrama about a tiny problem",
     "Dark Humour": "dry, dark, clever humour without targeting protected groups or encouraging harm",
-    "Delulu": "delusional confidence, main-character energy, unserious optimism",
     "NPC Mode": "deadpan repetitive internet humour and oddly specific reactions"
 }
 
@@ -33,86 +32,87 @@ def ask_groq(situation, style):
     if not key:
         raise RuntimeError("Missing Groq API key. Add GROQ_API_KEY in Render Environment.")
 
-    # Plain labelled lines avoid Groq's intermittent constrained-JSON errors.
-    system = """You write funny, shareable meme captions.
-Return exactly three short lines, labelled TOP:, BOTTOM:, and IMAGE:.
-TOP is a punchy setup caption. BOTTOM is the connected punchline.
-IMAGE is a short visual search phrase describing a fitting reaction/photo.
-Captions should be 2-9 words each, specific to the situation and readable on an image.
-The IMAGE phrase should describe the situation or emotion, not default to cats.
+    system = """You are the creative director of a high-quality meme generator.
+Understand the actual meaning of the user's input before writing anything.
+If the input is one word, infer its most common funny internet context. If it is a full sentence, preserve its specific situation, people, action, and emotion.
+Create a connected top setup and bottom punchline that feel tailored to that exact context, not generic filler.
+Also create a very specific IMAGE phrase for a relevant photo/reaction/template that visually matches the situation. Do not default to cats, random animals, or unrelated stock photos.
+Return exactly three plain lines:
+TOP: ...
+BOTTOM: ...
+IMAGE: ...
+Captions should be concise, natural, funny, and readable on a meme. Avoid repeating the user's entire sentence verbatim.
 No explanations, markdown, hashtags, slurs, or hateful targeting."""
-    user = f"""Make a meme from this situation. It may be just one word or a full sentence.
-Situation: {situation}
-Vibe: {style} — {STYLES.get(style, STYLES['Relatable'])}
-Make the humour and visual idea fit the actual input. Return only the three labelled lines."""
+    user = f"""Make a highly context-specific meme from this input:
+USER'S SITUATION: {situation}
+CHOSEN HUMOUR STYLE: {style} — {STYLES.get(style, STYLES['Relatable'])}
+
+First identify the main event/emotion implied by the situation. The captions and image idea must all match that event. For example, an exam prompt should suggest exam/studying/panic visuals; a relationship prompt should suggest relationship visuals; a work prompt should suggest work visuals. These are examples only—follow the actual input.
+Return only TOP, BOTTOM, and IMAGE lines."""
 
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     payload = {
         "model": MODEL,
-        "temperature": 0.75,
-        "max_tokens": 180,
+        "temperature": 0.82,
+        "max_tokens": 220,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}]
     }
     response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=35)
-
+    if response.status_code >= 400 and response.status_code == 400:
+        payload["messages"][0]["content"] = (
+            "Return three plain text lines labelled TOP:, BOTTOM:, and IMAGE:. "
+            "Make both captions and the visual search phrase specific to the user's situation. No JSON."
+        )
+        response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=35)
     if response.status_code >= 400:
-        if response.status_code == 400:
-            payload["messages"][0]["content"] = (
-                "Write two funny meme captions and one relevant image search phrase. "
-                "Return three plain lines labelled TOP:, BOTTOM:, and IMAGE:. No JSON."
-            )
-            response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=35)
-        if response.status_code >= 400:
-            try:
-                detail = response.json().get("error", {}).get("message", response.text)
-            except Exception:
-                detail = response.text
-            raise RuntimeError(f"Groq API error ({response.status_code}): {str(detail)[:220]}")
+        try:
+            detail = response.json().get("error", {}).get("message", response.text)
+        except Exception:
+            detail = response.text
+        raise RuntimeError(f"Groq API error ({response.status_code}): {str(detail)[:220]}")
 
     try:
-        content = response.json()["choices"][0]["message"]["content"]
+        content = str(response.json()["choices"][0]["message"]["content"] or "")
     except (KeyError, IndexError, TypeError):
         content = ""
 
-    content = str(content or "")
     top_match = re.search(r"(?im)^\s*TOP\s*:\s*(.+)$", content)
     bottom_match = re.search(r"(?im)^\s*BOTTOM\s*:\s*(.+)$", content)
     image_match = re.search(r"(?im)^\s*IMAGE\s*:\s*(.+)$", content)
     top = top_match.group(1).strip().strip('"') if top_match else ""
     bottom = bottom_match.group(1).strip().strip('"') if bottom_match else ""
+    image_query = image_match.group(1).strip().strip('"') if image_match else ""
 
     if not top or not bottom:
         try:
             data = json.loads(content)
             top = str(data.get("top", "")).strip()
             bottom = str(data.get("bottom", "")).strip()
-            if not image_match:
-                q = data.get("image_query") or data.get("image") or ""
-                if q:
-                    image_match = re.search(r"(.*)", str(q))
+            image_query = str(data.get("image_query") or data.get("image") or image_query).strip()
         except (json.JSONDecodeError, TypeError, AttributeError):
             pass
 
-    # Keep the experience usable if the model returns an unexpected format.
     if not top or not bottom:
-        short = situation[:90].strip()
-        top = f"Me: {short}" if len(short.split()) <= 5 else f"When {short[:65]}"
+        # Useful, context-specific backup captions if the model format is unusual.
+        top = f"When {situation[:70].strip()}"
         bottom = random.choice([
-            "I was NOT ready for this plot twist",
-            "And somehow it got even worse",
-            "My last two brain cells clocking out",
-            "Anyway, we move. Emotionally? No.",
-            "This was not in the tutorial"
+            "This was NOT part of the plan",
+            "My brain chose the worst time to log off",
+            "And that's how the plot thickens",
+            "I need a software update for my life",
+            "Nobody warned me about this side quest"
         ])
-    image_query = image_match.group(1).strip().strip('"') if image_match else ""
-    return top[:120], bottom[:120], image_query[:140]
+        if not image_query:
+            image_query = f"{situation} reaction photo"
+    if not image_query:
+        image_query = f"{situation} expression reaction photo"
+    return top[:120], bottom[:120], image_query[:160]
 
 def find_image(situation, style, image_query=""):
-    # Prefer the AI's scenario-specific visual idea. Never default to cats.
+    # Build the search around the AI's visual interpretation and user's actual context.
     queries = []
-    for query in (image_query, f"{situation} reaction photo", f"{situation} funny reaction meme",
-                  f"{style} reaction meme"):
+    for query in (image_query, f"{situation} reaction image", f"{situation} meme template"):
         query = re.sub(r"\s+", " ", str(query or "")).strip()
         if query and query.lower() not in [q.lower() for q in queries]:
             queries.append(query[:180])
@@ -122,20 +122,34 @@ def find_image(situation, style, image_query=""):
         with DDGS() as ddgs:
             for query in queries:
                 try:
-                    results = ddgs.images(query, max_results=10)
-                    for item in results:
+                    for item in ddgs.images(query, max_results=12):
                         url = item.get("image") or item.get("thumbnail")
-                        if url and url.startswith("https://") and url not in candidates:
-                            candidates.append(url)
+                        if not url or not url.startswith("https://"):
+                            continue
+                        title = str(item.get("title") or item.get("alt") or item.get("source") or "")
+                        if not any(row["url"] == url for row in candidates):
+                            candidates.append({"url": url, "title": title, "query": query})
                 except Exception:
                     continue
     except Exception:
         pass
 
+    # Rank results by overlap with the actual situation/AI visual idea instead of
+    # randomly selecting an unrelated result from a broad image search.
+    keywords = set(re.findall(r"[a-z0-9]{3,}", f"{situation} {image_query}".lower()))
+    stopwords = {"the", "and", "for", "with", "when", "from", "this", "that", "photo",
+                 "image", "meme", "reaction", "funny", "person", "people", "someone"}
+    keywords -= stopwords
     random.shuffle(candidates)
-    for url in candidates[:24]:
+    candidates.sort(
+        key=lambda row: sum(1 for word in keywords if word in row["title"].lower()),
+        reverse=True
+    )
+
+    for item in candidates[:28]:
         try:
-            r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0 MemeLab/1.0"})
+            r = requests.get(item["url"], timeout=8,
+                             headers={"User-Agent": "Mozilla/5.0 MemeLab/1.0"})
             if r.status_code != 200 or len(r.content) > 7_000_000:
                 continue
             im = Image.open(io.BytesIO(r.content))
@@ -146,10 +160,9 @@ def find_image(situation, style, image_query=""):
         except Exception:
             continue
 
-    # If image search is unavailable on free hosting, create a unique prompt-based
-    # visual instead of silently reusing a generic cat photo.
+    # Never substitute a random cat. A distinct designed visual is more honest
+    # than pretending an unrelated photo matches the user's prompt.
     return make_fallback(situation, style)
-
 
 def make_fallback(situation, style="Relatable"):
     w, h = 1000, 700
@@ -270,7 +283,7 @@ body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.13;ba
 <textarea id="situation" class="textarea" maxlength="500" placeholder="e.g. me opening the syllabus one night before the exam..."></textarea><div class="hint">The more oddly specific, the better. Your lore is safe here.</div>
 <div style="height:23px"></div><span class="fieldlabel">PICK YOUR INTERNET PERSONALITY</span>
 <div class="chips" id="styles">
-<button class="chip active" data-style="Relatable">🫠 Relatable</button><button class="chip" data-style="Savage">💅 Savage</button><button class="chip" data-style="Brainrot">🧠 Brainrot</button><button class="chip" data-style="Aura">🕶️ Aura</button><button class="chip" data-style="Classic">📼 Classic</button><button class="chip" data-style="Wholesome">🫶 Wholesome</button><button class="chip" data-style="Dramatic">🎬 Dramatic</button><button class="chip" data-style="Dark Humour">🖤 Dark humour</button><button class="chip" data-style="Delulu">💋 Delulu</button><button class="chip" data-style="NPC Mode">🤖 NPC mode</button></div>
+<button class="chip active" data-style="Relatable">🫠 Relatable</button><button class="chip" data-style="Savage">💅 Savage</button><button class="chip" data-style="Brainrot">🧠 Brainrot</button><button class="chip" data-style="Aura">🕶️ Aura</button><button class="chip" data-style="Classic">📼 Classic</button><button class="chip" data-style="Wholesome">🫶 Wholesome</button><button class="chip" data-style="Dramatic">🎬 Dramatic</button><button class="chip" data-style="Dark Humour">🖤 Dark humour</button><button class="chip" data-style="NPC Mode">🤖 NPC mode</button></div>
 <button class="btn primary" id="create">✦ COOK MY MEME <span>↗</span></button><div class="tiny">Powered by AI. Judged by your group chat.</div>
 </section>
 <section class="panel preview"><div class="panelhead"><h2>Your masterpiece</h2><span class="step" id="badge">WAITING FOR THE COOK</span></div>
