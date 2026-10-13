@@ -31,35 +31,67 @@ STYLES = {
 def ask_groq(situation, style):
     key = os.environ.get("GROQ_API_KEY", "").strip()
     if not key:
-        raise RuntimeError("Missing Groq API key. Restart using the PowerShell launcher and enter your key.")
-    system = """You are the funniest, most online meme writer in a Gen Z group chat. Create highly shareable meme captions.
-Return ONLY valid JSON with keys top and bottom. Each value must be a short caption, ideally 2-9 words.
-Be specific to the user's situation, punchy, fresh, natural, and readable on an image. Avoid generic jokes, hashtags, explaining the joke, and forced slang. Do not use slurs or target protected groups. Don't put quote marks around captions."""
-    user = f"""Situation: {situation}
+        raise RuntimeError("Missing Groq API key. Add GROQ_API_KEY in Render Environment.")
+
+    system = """You write funny, shareable meme captions.
+Reply with exactly one JSON object and no other text, markdown, or code fences.
+The object must have exactly two string keys: "top" and "bottom".
+Each caption should be 2-9 words, specific to the situation, punchy, and readable on an image.
+No explanations, no hashtags, no slurs, and do not target protected groups."""
+    user = f"""Create two connected meme captions for this situation.
+Situation: {situation}
 Vibe: {style} — {STYLES.get(style, STYLES['Relatable'])}
-Write a top line that sets up the situation and a bottom line that lands the punchline. They should work together."""
-    response = requests.post(
-        GROQ_URL,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={"model": MODEL, "temperature": 0.95, "max_tokens": 180,
-              "messages": [{"role":"system","content":system},{"role":"user","content":user}],
-              "response_format": {"type": "json_object"}},
-        timeout=30
-    )
+Return JSON only, in this exact shape: {{"top":"setup caption","bottom":"punchline caption"}}"""
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": user}]
+    payload = {
+        "model": MODEL,
+        "temperature": 0.4,
+        "max_tokens": 220,
+        "messages": messages,
+        "response_format": {"type": "json_object"}
+    }
+
+    response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
+
+    # Some model/account combinations reject constrained JSON output.
+    # Retry once without response_format, keeping the JSON-only instructions.
+    if response.status_code == 400 and "failed to validate json" in response.text.lower():
+        payload.pop("response_format", None)
+        response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
+
     if response.status_code >= 400:
         try:
             detail = response.json().get("error", {}).get("message", response.text)
         except Exception:
             detail = response.text
         raise RuntimeError(f"Groq API error ({response.status_code}): {str(detail)[:260]}")
-    content = response.json()["choices"][0]["message"]["content"]
+
+    try:
+        content = response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("Groq returned an empty or unexpected response. Try again.")
+
     try:
         data = json.loads(content)
-    except Exception:
-        match = re.search(r"\{.*\}", content, re.S)
+    except (json.JSONDecodeError, TypeError):
+        # Accept JSON wrapped in markdown fences or a short explanation.
+        match = re.search(r"\{[\s\S]*\}", str(content))
         if not match:
-            raise RuntimeError("AI returned an unexpected format. Try again.")
-        data = json.loads(match.group(0))
+            raise RuntimeError("AI did not return usable captions. Try again.")
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            raise RuntimeError("AI returned malformed captions. Please remix and try again.")
+
+    if not isinstance(data, dict):
+        raise RuntimeError("AI returned captions in an unexpected format. Try again.")
+
     top = str(data.get("top", "")).strip().strip('"')
     bottom = str(data.get("bottom", "")).strip().strip('"')
     if not top or not bottom:
