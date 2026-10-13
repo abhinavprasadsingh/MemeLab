@@ -42,7 +42,8 @@ Write a top line that sets up the situation and a bottom line that lands the pun
         GROQ_URL,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json={"model": MODEL, "temperature": 0.95, "max_tokens": 180,
-              "messages": [{"role":"system","content":system},{"role":"user","content":user}]},
+              "messages": [{"role":"system","content":system},{"role":"user","content":user}],
+              "response_format": {"type": "json_object"}},
         timeout=30
     )
     if response.status_code >= 400:
