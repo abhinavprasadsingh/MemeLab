@@ -1,4 +1,5 @@
-import os, io, json, random, re, time, uuid
+import os, io, json, random, re, time, uuid, ipaddress
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -115,13 +116,14 @@ Return only the TOP, BOTTOM, and IMAGE lines in the required format."""
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}]
     }
-    response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=35)
-    if response.status_code >= 400 and response.status_code == 400:
+    # Bound provider latency; retry only when the provider rejects the request format.
+    response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=(4, 22))
+    if response.status_code == 400:
         payload["messages"][0]["content"] = (
             "Return three plain text lines labelled TOP:, BOTTOM:, and IMAGE:. "
-            "Make both captions and the visual search phrase specific to the user's situation. No JSON."
+            "Make captions and the visual phrase specific to the user's situation. No JSON."
         )
-        response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=35)
+        response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=(4, 18))
     if response.status_code >= 400:
         try:
             detail = response.json().get("error", {}).get("message", response.text)
@@ -168,59 +170,93 @@ Return only the TOP, BOTTOM, and IMAGE lines in the required format."""
         image_query = f"{situation} expression reaction photo"
     return top[:120], bottom[:120], image_query[:160]
 
-def find_image(situation, style, image_query=""):
-    # Build the search around the AI's visual interpretation and user's actual context.
-    queries = []
-    for query in (image_query, f"{situation} reaction image", f"{situation} meme template"):
-        query = re.sub(r"\s+", " ", str(query or "")).strip()
-        if query and query.lower() not in [q.lower() for q in queries]:
-            queries.append(query[:180])
+def _safe_public_image_url(raw_url):
+    """Reject non-HTTPS, credentialed, localhost and literal private-IP image URLs."""
+    try:
+        parsed = urlparse(str(raw_url or ""))
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            return False
+        host = parsed.hostname.rstrip(".").lower()
+        if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+            return False
+        try:
+            return ipaddress.ip_address(host).is_global
+        except ValueError:
+            return "." in host
+    except (TypeError, ValueError):
+        return False
 
+def _download_candidate(item):
+    """Download one bounded image candidate; failures are intentionally non-fatal."""
+    if not _safe_public_image_url(item.get("url", "")):
+        return None
+    try:
+        with requests.get(item["url"], timeout=(2.5, 3.5), stream=True,
+                          headers={"User-Agent": "Mozilla/5.0 MemeLab/1.0"}) as response:
+            if response.status_code != 200:
+                return None
+            content_type = response.headers.get("Content-Type", "").lower()
+            if content_type and not content_type.startswith("image/"):
+                return None
+            length = response.headers.get("Content-Length")
+            if length and int(length) > 5_000_000:
+                return None
+            chunks, total = [], 0
+            for chunk in response.iter_content(64 * 1024):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > 5_000_000:
+                    return None
+                chunks.append(chunk)
+        Image.MAX_IMAGE_PIXELS = 20_000_000
+        with Image.open(io.BytesIO(b"".join(chunks))) as source:
+            if source.width < 240 or source.height < 180 or source.width * source.height > 20_000_000:
+                return None
+            source.load()
+            return source.convert("RGB")
+    except Exception:
+        return None
+
+def find_image(situation, style, image_query=""):
+    # One targeted search is faster than serially trying several broad queries.
+    query = re.sub(r"\s+", " ", str(image_query or "")).strip() or f"{situation} reaction image"
     candidates = []
     try:
         with DDGS() as ddgs:
-            for query in queries:
-                try:
-                    for item in ddgs.images(query, max_results=12):
-                        url = item.get("image") or item.get("thumbnail")
-                        if not url or not url.startswith("https://"):
-                            continue
-                        title = str(item.get("title") or item.get("alt") or item.get("source") or "")
-                        if not any(row["url"] == url for row in candidates):
-                            candidates.append({"url": url, "title": title, "query": query})
-                except Exception:
+            for item in ddgs.images(query[:180], max_results=8):
+                url = item.get("image") or item.get("thumbnail")
+                if not _safe_public_image_url(url):
                     continue
+                title = str(item.get("title") or item.get("alt") or item.get("source") or "")
+                if not any(row["url"] == url for row in candidates):
+                    candidates.append({"url": url, "title": title})
     except Exception:
-        pass
+        app.logger.info("Image search unavailable; using designed fallback")
 
-    # Rank results by overlap with the actual situation/AI visual idea instead of
-    # randomly selecting an unrelated result from a broad image search.
     keywords = set(re.findall(r"[a-z0-9]{3,}", f"{situation} {image_query}".lower()))
-    stopwords = {"the", "and", "for", "with", "when", "from", "this", "that", "photo",
-                 "image", "meme", "reaction", "funny", "person", "people", "someone"}
-    keywords -= stopwords
+    keywords -= {"the", "and", "for", "with", "when", "from", "this", "that", "photo", "image", "meme", "reaction", "funny", "person", "people", "someone"}
     random.shuffle(candidates)
-    candidates.sort(
-        key=lambda row: sum(1 for word in keywords if word in row["title"].lower()),
-        reverse=True
-    )
-
-    for item in candidates[:28]:
-        try:
-            r = requests.get(item["url"], timeout=8,
-                             headers={"User-Agent": "Mozilla/5.0 MemeLab/1.0"})
-            if r.status_code != 200 or len(r.content) > 7_000_000:
+    candidates.sort(key=lambda row: sum(word in row["title"].lower() for word in keywords), reverse=True)
+    # Concurrent bounded downloads avoid waiting on each dead image host in sequence.
+    pool = ThreadPoolExecutor(max_workers=4)
+    futures = [pool.submit(_download_candidate, item) for item in candidates[:6]]
+    try:
+        for future in as_completed(futures, timeout=5):
+            try:
+                result = future.result()
+                if result is not None:
+                    for pending in futures:
+                        if pending is not future:
+                            pending.cancel()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    return result
+            except Exception:
                 continue
-            im = Image.open(io.BytesIO(r.content))
-            im.load()
-            if im.width < 240 or im.height < 180:
-                continue
-            return im.convert("RGB")
-        except Exception:
-            continue
-
-    # Never substitute a random cat. A distinct designed visual is more honest
-    # than pretending an unrelated photo matches the user's prompt.
+    except TimeoutError:
+        pass
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return make_fallback(situation, style)
 
 def make_fallback(situation, style="Relatable"):
@@ -385,12 +421,21 @@ def home():
 @app.post("/api/create")
 @limiter.limit("5 per minute; 30 per hour")
 def create():
-    payload = request.get_json(silent=True) or {}
-    situation = re.sub(r"\s+", " ", str(payload.get("situation", ""))).strip()[:500]
-    style = str(payload.get("style", "Relatable"))
-    remix = payload.get("remix", False) is True
     if not request.is_json:
         return jsonify(error="Send the request as JSON."), 415
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="Invalid request. Please send a situation and style."), 400
+    raw_situation = payload.get("situation", "")
+    if not isinstance(raw_situation, str):
+        return jsonify(error="Situation must be text."), 400
+    situation = re.sub(r"\s+", " ", raw_situation).strip()
+    if len(situation) > 500:
+        return jsonify(error="Keep your situation under 500 characters."), 413
+    style = payload.get("style", "Relatable")
+    if not isinstance(style, str):
+        style = "Relatable"
+    remix = payload.get("remix", False) is True
     if not situation:
         return jsonify(error="Enter a situation first."), 400
     if style not in STYLES:
@@ -405,9 +450,32 @@ def create():
             "Focus on an oddly relatable detail.",
         ]) if remix else None
         top, bottom, image_query = ask_groq(situation, style, variation=remix_angle)
-        image = find_image(situation, style, image_query)
+        try:
+            image = find_image(situation, style, image_query)
+        except Exception:
+            app.logger.exception("Image lookup failed; using designed fallback")
+            image = make_fallback(situation, style)
         rendered = render_meme(image, top, bottom, style)
-        name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
+        # Bound disk usage: remove files older than a day, then keep at most 149 old files.
+        now = time.time()
+        try:
+            old_files = sorted(OUT.glob("*.png"), key=lambda path: path.stat().st_mtime)
+            cutoff = now - 24 * 60 * 60
+            for old_file in old_files:
+                try:
+                    if old_file.stat().st_mtime < cutoff:
+                        old_file.unlink(missing_ok=True)
+                except OSError:
+                    continue
+            remaining = sorted(OUT.glob("*.png"), key=lambda path: path.stat().st_mtime)
+            for old_file in remaining[:max(0, len(remaining) - 149)]:
+                try:
+                    old_file.unlink(missing_ok=True)
+                except OSError:
+                    continue
+        except OSError:
+            app.logger.warning("Could not prune old generated images")
+        name = f"{uuid.uuid4().hex}.png"
         rendered.save(OUT / name, format="PNG", optimize=True)
         return jsonify(top=top, bottom=bottom, image=f"/generated/{name}")
     except Exception:
