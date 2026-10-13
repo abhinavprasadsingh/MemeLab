@@ -25,6 +25,10 @@ limiter = Limiter(
     headers_enabled=True,
 )
 
+@app.errorhandler(429)
+def rate_limit_exceeded(_error):
+    return jsonify(error="Too many meme requests. Please wait a minute and try again."), 429
+
 @app.after_request
 def add_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
