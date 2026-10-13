@@ -4,6 +4,9 @@ from urllib.parse import urlparse
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory, render_template_string
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from ddgs import DDGS
 
@@ -11,7 +14,32 @@ ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "static" / "generated"
 OUT.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+app.config.update(MAX_CONTENT_LENGTH=64 * 1024)
+# Render sits behind one trusted reverse proxy; use the visitor IP for rate limits.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0, x_port=0, x_prefix=0)
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+    headers_enabled=True,
+)
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; connect-src 'self'; base-uri 'self'; "
+        "form-action 'self'; frame-ancestors 'none'"
+    )
+    if request.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
@@ -340,24 +368,37 @@ def home():
     return render_template_string(PAGE)
 
 @app.post("/api/create")
+@limiter.limit("5 per minute; 30 per hour")
 def create():
     payload = request.get_json(silent=True) or {}
     situation = re.sub(r"\s+", " ", str(payload.get("situation", ""))).strip()[:500]
     style = str(payload.get("style", "Relatable"))
-    remix = bool(payload.get("remix", False))
+    remix = payload.get("remix", False) is True
+    if not request.is_json:
+        return jsonify(error="Send the request as JSON."), 415
     if not situation:
         return jsonify(error="Enter a situation first."), 400
     if style not in STYLES:
         style = "Relatable"
     try:
-        top, bottom, image_query = ask_groq(situation, style)
+        # A remix gets a fresh creative angle rather than reusing the same prompt.
+        remix_angle = random.choice([
+            "Use a fresh angle not used in a typical meme.",
+            "Try an unexpected everyday twist.",
+            "Make the joke more specific and surprising.",
+            "Use a different punchline structure.",
+            "Focus on an oddly relatable detail.",
+        ]) if remix else None
+        top, bottom, image_query = ask_groq(situation, style, variation=remix_angle)
         image = find_image(situation, style, image_query)
         rendered = render_meme(image, top, bottom, style)
         name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
         rendered.save(OUT / name, format="PNG", optimize=True)
         return jsonify(top=top, bottom=bottom, image=f"/generated/{name}")
-    except Exception as e:
-        return jsonify(error=str(e)[:400]), 502
+    except Exception:
+        # Keep provider details, user prompts, and configuration out of public responses.
+        app.logger.exception("Meme generation failed")
+        return jsonify(error="Meme generation failed. Please try again shortly."), 502
 
 @app.get("/generated/<path:filename>")
 def generated(filename):
