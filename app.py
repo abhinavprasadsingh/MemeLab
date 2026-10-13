@@ -33,95 +33,109 @@ def ask_groq(situation, style):
     if not key:
         raise RuntimeError("Missing Groq API key. Add GROQ_API_KEY in Render Environment.")
 
+    # Plain labelled lines avoid Groq's intermittent constrained-JSON errors.
     system = """You write funny, shareable meme captions.
-Reply with exactly one JSON object and no other text, markdown, or code fences.
-The object must have exactly two string keys: "top" and "bottom".
-Each caption should be 2-9 words, specific to the situation, punchy, and readable on an image.
-No explanations, no hashtags, no slurs, and do not target protected groups."""
-    user = f"""Create two connected meme captions for this situation.
+Return exactly three short lines, labelled TOP:, BOTTOM:, and IMAGE:.
+TOP is a punchy setup caption. BOTTOM is the connected punchline.
+IMAGE is a short visual search phrase describing a fitting reaction/photo.
+Captions should be 2-9 words each, specific to the situation and readable on an image.
+The IMAGE phrase should describe the situation or emotion, not default to cats.
+No explanations, markdown, hashtags, slurs, or hateful targeting."""
+    user = f"""Make a meme from this situation. It may be just one word or a full sentence.
 Situation: {situation}
 Vibe: {style} — {STYLES.get(style, STYLES['Relatable'])}
-Return JSON only, in this exact shape: {{"top":"setup caption","bottom":"punchline caption"}}"""
+Make the humour and visual idea fit the actual input. Return only the three labelled lines."""
 
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json"
-    }
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": user}]
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     payload = {
         "model": MODEL,
-        "temperature": 0.4,
-        "max_tokens": 220,
-        "messages": messages,
-        "response_format": {"type": "json_object"}
+        "temperature": 0.75,
+        "max_tokens": 180,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}]
     }
-
-    response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
-
-    # Some model/account combinations reject constrained JSON output.
-    # Retry once without response_format, keeping the JSON-only instructions.
-    if response.status_code == 400 and "failed to validate json" in response.text.lower():
-        payload.pop("response_format", None)
-        response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
+    response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=35)
 
     if response.status_code >= 400:
-        try:
-            detail = response.json().get("error", {}).get("message", response.text)
-        except Exception:
-            detail = response.text
-        raise RuntimeError(f"Groq API error ({response.status_code}): {str(detail)[:260]}")
+        if response.status_code == 400:
+            payload["messages"][0]["content"] = (
+                "Write two funny meme captions and one relevant image search phrase. "
+                "Return three plain lines labelled TOP:, BOTTOM:, and IMAGE:. No JSON."
+            )
+            response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=35)
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("error", {}).get("message", response.text)
+            except Exception:
+                detail = response.text
+            raise RuntimeError(f"Groq API error ({response.status_code}): {str(detail)[:220]}")
 
     try:
         content = response.json()["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        raise RuntimeError("Groq returned an empty or unexpected response. Try again.")
+        content = ""
 
-    try:
-        data = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        # Accept JSON wrapped in markdown fences or a short explanation.
-        match = re.search(r"\{[\s\S]*\}", str(content))
-        if not match:
-            raise RuntimeError("AI did not return usable captions. Try again.")
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            raise RuntimeError("AI returned malformed captions. Please remix and try again.")
+    content = str(content or "")
+    top_match = re.search(r"(?im)^\s*TOP\s*:\s*(.+)$", content)
+    bottom_match = re.search(r"(?im)^\s*BOTTOM\s*:\s*(.+)$", content)
+    image_match = re.search(r"(?im)^\s*IMAGE\s*:\s*(.+)$", content)
+    top = top_match.group(1).strip().strip('"') if top_match else ""
+    bottom = bottom_match.group(1).strip().strip('"') if bottom_match else ""
 
-    if not isinstance(data, dict):
-        raise RuntimeError("AI returned captions in an unexpected format. Try again.")
-
-    top = str(data.get("top", "")).strip().strip('"')
-    bottom = str(data.get("bottom", "")).strip().strip('"')
     if not top or not bottom:
-        raise RuntimeError("AI returned an empty caption. Try again.")
-    return top[:120], bottom[:120]
+        try:
+            data = json.loads(content)
+            top = str(data.get("top", "")).strip()
+            bottom = str(data.get("bottom", "")).strip()
+            if not image_match:
+                q = data.get("image_query") or data.get("image") or ""
+                if q:
+                    image_match = re.search(r"(.*)", str(q))
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
 
-def find_image(situation, style):
-    queries = [
-        f"{situation} funny reaction image",
-        f"funny reaction meme {situation}",
-        "funny cat reaction meme"
-    ]
+    # Keep the experience usable if the model returns an unexpected format.
+    if not top or not bottom:
+        short = situation[:90].strip()
+        top = f"Me: {short}" if len(short.split()) <= 5 else f"When {short[:65]}"
+        bottom = random.choice([
+            "I was NOT ready for this plot twist",
+            "And somehow it got even worse",
+            "My last two brain cells clocking out",
+            "Anyway, we move. Emotionally? No.",
+            "This was not in the tutorial"
+        ])
+    image_query = image_match.group(1).strip().strip('"') if image_match else ""
+    return top[:120], bottom[:120], image_query[:140]
+
+def find_image(situation, style, image_query=""):
+    # Prefer the AI's scenario-specific visual idea. Never default to cats.
+    queries = []
+    for query in (image_query, f"{situation} reaction photo", f"{situation} funny reaction meme",
+                  f"{style} reaction meme"):
+        query = re.sub(r"\s+", " ", str(query or "")).strip()
+        if query and query.lower() not in [q.lower() for q in queries]:
+            queries.append(query[:180])
+
     candidates = []
     try:
         with DDGS() as ddgs:
             for query in queries:
                 try:
-                    results = ddgs.images(query, max_results=7)
+                    results = ddgs.images(query, max_results=10)
                     for item in results:
                         url = item.get("image") or item.get("thumbnail")
-                        if url and url.startswith("https://"):
+                        if url and url.startswith("https://") and url not in candidates:
                             candidates.append(url)
                 except Exception:
                     continue
     except Exception:
         pass
+
     random.shuffle(candidates)
-    for url in candidates[:16]:
+    for url in candidates[:24]:
         try:
-            r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0 MemeLab/1.0"})
+            r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0 MemeLab/1.0"})
             if r.status_code != 200 or len(r.content) > 7_000_000:
                 continue
             im = Image.open(io.BytesIO(r.content))
@@ -131,33 +145,46 @@ def find_image(situation, style):
             return im.convert("RGB")
         except Exception:
             continue
-    # Reliable visual fallback so the app can still make a meme if image search is unavailable.
-    return make_fallback(situation)
 
-def make_fallback(situation):
+    # If image search is unavailable on free hosting, create a unique prompt-based
+    # visual instead of silently reusing a generic cat photo.
+    return make_fallback(situation, style)
+
+
+def make_fallback(situation, style="Relatable"):
     w, h = 1000, 700
-    im = Image.new("RGB", (w, h), (27, 17, 52))
+    palettes = [
+        ((20, 18, 48), (255, 66, 166), (107, 85, 255)),
+        ((15, 39, 48), (39, 224, 190), (255, 132, 74)),
+        ((44, 20, 28), (255, 99, 71), (255, 197, 70)),
+        ((24, 20, 48), (177, 105, 255), (70, 170, 255)),
+        ((25, 35, 23), (165, 232, 94), (255, 112, 179)),
+        ((42, 24, 50), (255, 91, 194), (255, 182, 72))
+    ]
+    bg, accent, accent2 = random.choice(palettes)
+    im = Image.new("RGB", (w, h), bg)
     d = ImageDraw.Draw(im)
-    d.ellipse((620, -130, 1120, 370), fill=(255, 46, 166))
-    d.ellipse((-140, 410, 430, 980), fill=(111, 61, 255))
-    d.rounded_rectangle((95, 110, 905, 590), radius=45, fill=(36, 26, 68), outline=(255, 82, 186), width=5)
-    try:
-        font = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 38)
-    except Exception:
-        font = ImageFont.load_default()
-    label = "THE VIBE IS:"
-    d.text((145, 190), label, font=font, fill=(255, 104, 204))
-    words = situation.split()
+    d.ellipse((620, -160, 1130, 350), fill=accent)
+    d.ellipse((-180, 440, 400, 1020), fill=accent2)
+    d.rounded_rectangle((70, 75, 930, 625), radius=48, fill=(18, 15, 32), outline=accent, width=5)
+    font = get_font(39)
+    small = get_font(23, False)
+    d.text((120, 125), "THE SITUATION:", font=small, fill=accent)
+    words = re.sub(r"\s+", " ", situation).split()
     lines, line = [], ""
     for word in words:
-        if len(line + " " + word) > 27:
-            lines.append(line); line = word
+        test = (line + " " + word).strip()
+        if d.textbbox((0, 0), test, font=font)[2] < 760:
+            line = test
         else:
-            line = (line + " " + word).strip()
-    if line: lines.append(line)
-    for i, ln in enumerate(lines[:5]):
-        d.text((145, 260+i*52), ln, font=font, fill=(255,255,255))
-    d.text((145, 510), "MEMELAB • MAIN CHARACTER MOMENT", font=ImageFont.load_default(), fill=(188,170,255))
+            if line:
+                lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    for i, ln in enumerate(lines[:6]):
+        d.text((120, 195 + i * 53), ln, font=font, fill=(255, 255, 255))
+    d.text((120, 555), f"{style.upper()} MODE  •  MEMELAB ✦", font=small, fill=accent2)
     return im
 
 def get_font(size, bold=True):
@@ -293,8 +320,8 @@ def create():
     if style not in STYLES:
         style = "Relatable"
     try:
-        top, bottom = ask_groq(situation, style)
-        image = find_image(situation, style)
+        top, bottom, image_query = ask_groq(situation, style)
+        image = find_image(situation, style, image_query)
         rendered = render_meme(image, top, bottom, style)
         name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.png"
         rendered.save(OUT / name, format="PNG", optimize=True)
