@@ -461,7 +461,23 @@ def create():
             "Use a different punchline structure.",
             "Focus on an oddly relatable detail.",
         ]) if remix else None
-        top, bottom, image_query = ask_groq(situation, style, variation=remix_angle)
+        try:
+            top, bottom, image_query = ask_groq(situation, style, variation=remix_angle)
+        except Exception:
+            # Keep meme creation usable if Groq is temporarily unavailable or not configured.
+            app.logger.exception("AI captions unavailable; using local fallback captions")
+            short_situation = situation[:65].strip().rstrip(" .,!?:;")
+            top = f"When {short_situation}"[:120]
+            bottom = random.choice([
+                "My last two brain cells resigned",
+                "The consequences have entered the chat",
+                "Character development was NOT in my budget",
+                "I would like to unsubscribe from reality",
+                "Even my backup plan needs a backup",
+                "Somehow, this is still my fault",
+                "Task failed successfully"
+            ])
+            image_query = f"{situation} reaction photo"
         try:
             image = find_image(situation, style, image_query)
         except Exception:
