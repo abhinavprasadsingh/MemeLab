@@ -1,0 +1,10 @@
+﻿services:
+  - type: web
+    name: memelab
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
