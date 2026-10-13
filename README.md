@@ -17,6 +17,8 @@ MemeLab uses Groq AI to create short, readable meme captions, searches for a con
 - One-click generation, caption remixing, and PNG download
 - Responsive dark neon interface
 - API keys read from environment variables; no secret should be hardcoded in source
+- Basic security headers and JSON response no-cache headers
+- Per-IP generation limits (5 requests/minute and 30/hour per app worker)
 
 ## Live deployment
 
@@ -92,7 +94,7 @@ A safe placeholder example is included in `.env.example`. The app reads `GROQ_AP
 - Never commit `.env`, API keys, or other credentials.
 - If a key was ever exposed, revoke it and create a new one. Deleting it in a later commit does not remove it from Git history.
 - Image search results may have usage restrictions. Check licensing and platform terms before reposting images publicly.
-- Before a larger public launch, consider rate limiting and monitoring API usage.
+- Basic request limiting and browser security headers are enabled. The current rate limiter uses in-memory storage, so counters are per app process and can reset on restart; this is a useful baseline, not a complete anti-abuse system. For a larger public launch, use a shared rate-limit store, monitor Groq usage, add a CAPTCHA or login if abuse appears, and consider keeping the repository private if you do not want to publish the source. Never commit secrets.
 
 ---
 
