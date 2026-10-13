@@ -64,17 +64,25 @@ def ask_groq(situation, style, variation=None):
     if not key:
         raise RuntimeError("Missing Groq API key. Add GROQ_API_KEY in Render Environment.")
 
-    system = """You are the creative director of a high-quality meme generator.
-Understand the actual meaning of the user's input before writing anything.
-If the input is one word, infer its most common funny internet context. If it is a full sentence, preserve its specific situation, people, action, and emotion.
-Make a simple, instantly understandable, genuinely funny Gen Z meme that feels like something people would immediately share with friends.
-Stay STRICTLY on the user's topic. Never force an unrelated joke, random internet reference, or complicated metaphor. Use everyday words, a clear setup and a strong unexpected punchline. Keep each caption short (ideally 3–9 words), natural, specific, and laugh-out-loud relatable. Use current Gen Z tone lightly and naturally; do not cram in slang or use it where it does not fit. The joke should be obvious on first read, not require explanation.
-The image idea must show the exact situation or a clearly relevant reaction to it. Do not choose a random animal, generic stock photo, or unrelated meme.
+    system = """You are an elite meme writer with the timing of a great stand-up comic and the instincts of a chronically-online group chat.
+Your job is not to write a merely relevant caption: make the user actually laugh.
+FIRST, silently identify the funniest specific detail, contradiction, awkward consequence, irrational reaction, or painfully true part of the situation. Build the joke around that detail.
+JOKE QUALITY RULES:
+- Make TOP a clear setup and BOTTOM a real punchline, not two versions of the same sentence.
+- Prefer a surprising, specific payoff over generic relatability. Use misdirection, overreaction, irony, absurdly precise details, or a sharp comparison when it fits.
+- Sound like a funny human friend, not a motivational quote or an AI trying to sound young.
+- Use natural, concise language. Usually 3–8 words per caption; shorter is often funnier.
+- Gen Z slang is optional seasoning, never the joke itself. Avoid forced slang, stale catchphrases, and generic filler.
+- Avoid tired defaults such as "this was not part of the plan", "my life is a joke", "it's giving", "bro really said", "nobody:", or random "POV:" unless the user's exact context makes it genuinely funny.
+- Don't explain the joke. No hashtags, emojis in captions, moral lessons, or extra setup.
+- One-word prompts: infer the likely everyday meaning and find a specific comic angle. Full-sentence prompts: preserve the exact details and emotional stakes.
+- Be playful and sharp, not cruel. No hateful jokes targeting protected groups.
+The IMAGE line must describe a visual that makes THIS joke funnier: a recognizable reaction, specific scene, or visual contrast. Never pick a random animal, generic stock photo, or unrelated meme.
 Return exactly three plain lines:
 TOP: ...
 BOTTOM: ...
 IMAGE: ...
-No explanations, markdown, hashtags, slurs, or hateful targeting. Be playful, clever, and easy to get."""
+No explanations or markdown."""
     angles = [
         "Use an unexpected but believable everyday reaction.",
         "Use a relatable inner-thought people usually do not say out loud.",
@@ -89,14 +97,15 @@ No explanations, markdown, hashtags, slurs, or hateful targeting. Be playful, cl
     ]
     angle = variation or random.choice(angles)
     nonce = uuid.uuid4().hex[:8]
-    user = f"""Make a highly context-specific meme from this input:
+    user = f"""Write a meme people would genuinely send to a friend because the punchline is too accurate:
 USER'S SITUATION: {situation}
 CHOSEN HUMOUR STYLE: {style} — {STYLES.get(style, STYLES['Relatable'])}
-CREATIVE ANGLE FOR THIS MEME: {angle}
-GENERATION ID: {nonce}
+CREATIVE ANGLE: {angle}
+UNIQUE GENERATION ID: {nonce}
 
-Make this result DIFFERENT from a typical generic meme. Follow the creative angle while staying strictly on the user's exact topic. Use a fresh joke idea, not a stock phrase. Keep it instantly understandable, natural, short, and funny on first read. Do not mention the generation ID. Avoid repeating common punchlines like 'this was not part of the plan' unless genuinely perfect for this context. The image idea must match the specific joke and situation. For a one-word prompt, use its common everyday/social-media meaning.
-Return only TOP, BOTTOM, and IMAGE lines."""
+Before answering, silently brainstorm three different punchlines and choose the funniest, most specific one. Do not output the brainstorm.
+Make TOP the setup and BOTTOM the unexpected payoff. The bottom caption must add a new comic idea, not repeat or summarize the top. Use concrete details from the situation wherever possible. Aim for "I hate how accurate this is" humour, sharp irony, or a ridiculous but logical escalation. Keep both lines punchy and readable. Don't force slang. Avoid clichés and stock meme templates. Each generation should explore a genuinely different joke, not just swap a few words. The IMAGE must visually reinforce the punchline and stay on topic.
+Return only the TOP, BOTTOM, and IMAGE lines in the required format."""
 
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     payload = {
@@ -145,11 +154,13 @@ Return only TOP, BOTTOM, and IMAGE lines."""
         # Useful, context-specific backup captions if the model format is unusual.
         top = f"When {situation[:70].strip()}"
         bottom = random.choice([
-            "This was NOT part of the plan",
-            "My brain chose the worst time to log off",
-            "And that's how the plot thickens",
-            "I need a software update for my life",
-            "Nobody warned me about this side quest"
+            "And somehow I made it worse",
+            "My last two brain cells resigned",
+            "The consequences have entered the chat",
+            "Character development was NOT in my budget",
+            "I would like to unsubscribe from reality",
+            "Even my backup plan needs a backup",
+            "Somehow, this is still my fault"
         ])
         if not image_query:
             image_query = f"{situation} reaction photo"
