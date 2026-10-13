@@ -399,7 +399,19 @@ async function createMeme(remix=false){
  $("status").className="status";$("status").textContent="Generating the punchline + hunting for the right vibe…";
  try{
   const res=await fetch("/api/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({situation,style,remix})});
-  const data=await res.json();if(!res.ok)throw new Error(data.error||"Something went wrong.");
+  const contentType=res.headers.get("content-type")||"";
+  let data;
+  if(contentType.includes("application/json")){
+   data=await res.json();
+  }else{
+   const body=(await res.text()).slice(0,240).replace(/<[^>]*>/g," ").replace(/\\s+/g," ").trim();
+   if(res.status===503||res.status===502||res.status===500){
+    throw new Error("MemeLab's server is having trouble right now. Please wait a moment and try again.");
+   }
+   throw new Error(body||"The server returned an unexpected response instead of JSON. Please try again.");
+  }
+  if(!res.ok)throw new Error(data.error||`Request failed (HTTP ${res.status}). Please try again.`);
+  if(!data.image)throw new Error("The meme was created without an image. Please try Remix or generate again.");
   lastImage=data.image;
   $("preview").innerHTML=`<img class="memeimg" alt="Your generated meme" src="${data.image}?t=${Date.now()}">`;
   $("badge").textContent="IT'S GIVING ICONIC";$("status").textContent="Cooked. Send it to the group chat immediately. ✦";
