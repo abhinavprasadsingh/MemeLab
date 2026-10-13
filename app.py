@@ -35,19 +35,19 @@ def ask_groq(situation, style):
     system = """You are the creative director of a high-quality meme generator.
 Understand the actual meaning of the user's input before writing anything.
 If the input is one word, infer its most common funny internet context. If it is a full sentence, preserve its specific situation, people, action, and emotion.
-Create a connected top setup and bottom punchline that feel tailored to that exact context, not generic filler.
-Also create a very specific IMAGE phrase for a relevant photo/reaction/template that visually matches the situation. Do not default to cats, random animals, or unrelated stock photos.
+Make a simple, instantly understandable, genuinely funny Gen Z meme that feels like something people would immediately share with friends.
+Stay STRICTLY on the user's topic. Never force an unrelated joke, random internet reference, or complicated metaphor. Use everyday words, a clear setup and a strong unexpected punchline. Keep each caption short (ideally 3–9 words), natural, specific, and laugh-out-loud relatable. Use current Gen Z tone lightly and naturally; do not cram in slang or use it where it does not fit. The joke should be obvious on first read, not require explanation.
+The image idea must show the exact situation or a clearly relevant reaction to it. Do not choose a random animal, generic stock photo, or unrelated meme.
 Return exactly three plain lines:
 TOP: ...
 BOTTOM: ...
 IMAGE: ...
-Captions should be concise, natural, funny, and readable on a meme. Avoid repeating the user's entire sentence verbatim.
-No explanations, markdown, hashtags, slurs, or hateful targeting."""
+No explanations, markdown, hashtags, slurs, or hateful targeting. Be playful, clever, and easy to get."""
     user = f"""Make a highly context-specific meme from this input:
 USER'S SITUATION: {situation}
 CHOSEN HUMOUR STYLE: {style} — {STYLES.get(style, STYLES['Relatable'])}
 
-First identify the main event/emotion implied by the situation. The captions and image idea must all match that event. For example, an exam prompt should suggest exam/studying/panic visuals; a relationship prompt should suggest relationship visuals; a work prompt should suggest work visuals. These are examples only—follow the actual input.
+Make the joke about THIS exact situation—not just a vaguely similar topic. Make it feel familiar to Gen Z and funny on the first read. Prefer a short relatable observation plus a punchline that flips expectations. No confusing wordplay, forced slang, overcomplicated references, or generic filler. Match the visual idea to the situation precisely. For a one-word prompt, use its most common everyday/social-media meaning; if unclear, choose a safe, relatable interpretation.
 Return only TOP, BOTTOM, and IMAGE lines."""
 
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -275,7 +275,7 @@ body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.13;ba
 </head>
 <body><div class="wrap">
 <header class="nav"><div class="brand"><div class="logo">✳</div>meme<span class="gradient">lab</span></div><div class="pill">✦ YOUR HUMOUR, UPGRADED</div></header>
-<section class="hero"><div class="eyebrow"><span class="spark">✦</span> THE INTERNET'S UNOFFICIAL THERAPY</div><h1>Don't explain it.<br><span class="gradient">Meme it.</span></h1><p>Turn your oddly specific life situations into dangerously shareable memes. One prompt. One vibe. Zero effort.</p>
+<section class="hero"><div class="eyebrow"><span class="spark">✦</span> THE INTERNET'S UNOFFICIAL THERAPY</div><h1>Your life is a joke.<br><span class="gradient">At least make it a good meme.</span></h1><p>Turn real-life chaos into simple, painfully relatable Gen Z memes. Easy to get. Hard not to send to the group chat.</p>
 <div class="tagline"><span>✦ AI-powered punchlines</span><span><i class="dot">✦</i> Instant PNG</span><span>✦ Maximum group-chat energy</span></div></section>
 <main class="layout">
 <section class="panel"><div class="panelhead"><h2>Make it painfully funny</h2><span class="step">01 / CREATE</span></div>
