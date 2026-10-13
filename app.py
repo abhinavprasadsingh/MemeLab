@@ -27,7 +27,7 @@ STYLES = {
     "NPC Mode": "deadpan repetitive internet humour and oddly specific reactions"
 }
 
-def ask_groq(situation, style):
+def ask_groq(situation, style, variation=None):
     key = os.environ.get("GROQ_API_KEY", "").strip()
     if not key:
         raise RuntimeError("Missing Groq API key. Add GROQ_API_KEY in Render Environment.")
@@ -43,17 +43,33 @@ TOP: ...
 BOTTOM: ...
 IMAGE: ...
 No explanations, markdown, hashtags, slurs, or hateful targeting. Be playful, clever, and easy to get."""
+    angles = [
+        "Use an unexpected but believable everyday reaction.",
+        "Use a relatable inner-thought people usually do not say out loud.",
+        "Use a tiny overreaction to the exact situation.",
+        "Use a clever expectation-versus-reality twist.",
+        "Use awkward social energy, but only if it fits the context.",
+        "Use a short, savage-but-friendly observation.",
+        "Use a specific 'this is so me' moment.",
+        "Use a funny consequence that naturally follows from the situation.",
+        "Use a playful Gen Z group-chat style punchline.",
+        "Use a simple, surprising comparison that is immediately obvious."
+    ]
+    angle = variation or random.choice(angles)
+    nonce = uuid.uuid4().hex[:8]
     user = f"""Make a highly context-specific meme from this input:
 USER'S SITUATION: {situation}
 CHOSEN HUMOUR STYLE: {style} — {STYLES.get(style, STYLES['Relatable'])}
+CREATIVE ANGLE FOR THIS MEME: {angle}
+GENERATION ID: {nonce}
 
-Make the joke about THIS exact situation—not just a vaguely similar topic. Make it feel familiar to Gen Z and funny on the first read. Prefer a short relatable observation plus a punchline that flips expectations. No confusing wordplay, forced slang, overcomplicated references, or generic filler. Match the visual idea to the situation precisely. For a one-word prompt, use its most common everyday/social-media meaning; if unclear, choose a safe, relatable interpretation.
+Make this result DIFFERENT from a typical generic meme. Follow the creative angle while staying strictly on the user's exact topic. Use a fresh joke idea, not a stock phrase. Keep it instantly understandable, natural, short, and funny on first read. Do not mention the generation ID. Avoid repeating common punchlines like 'this was not part of the plan' unless genuinely perfect for this context. The image idea must match the specific joke and situation. For a one-word prompt, use its common everyday/social-media meaning.
 Return only TOP, BOTTOM, and IMAGE lines."""
 
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     payload = {
         "model": MODEL,
-        "temperature": 0.82,
+        "temperature": 1.0,
         "max_tokens": 220,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}]
@@ -328,6 +344,7 @@ def create():
     payload = request.get_json(silent=True) or {}
     situation = re.sub(r"\s+", " ", str(payload.get("situation", ""))).strip()[:500]
     style = str(payload.get("style", "Relatable"))
+    remix = bool(payload.get("remix", False))
     if not situation:
         return jsonify(error="Enter a situation first."), 400
     if style not in STYLES:
