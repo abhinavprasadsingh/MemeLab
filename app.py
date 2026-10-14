@@ -219,44 +219,68 @@ def _download_candidate(item):
         return None
 
 def find_image(situation, style, image_query=""):
-    # One targeted search is faster than serially trying several broad queries.
-    query = re.sub(r"\s+", " ", str(image_query or "")).strip() or f"{situation} reaction image"
-    candidates = []
-    try:
-        with DDGS() as ddgs:
-            for item in ddgs.images(query[:180], max_results=8):
-                url = item.get("image") or item.get("thumbnail")
-                if not _safe_public_image_url(url):
-                    continue
-                title = str(item.get("title") or item.get("alt") or item.get("source") or "")
-                if not any(row["url"] == url for row in candidates):
-                    candidates.append({"url": url, "title": title})
-    except Exception:
-        app.logger.info("Image search unavailable; using designed fallback")
+    """Search several relevant photo queries and use the first valid real image."""
+    def clean_query(value):
+        value = re.sub(r"[^a-zA-Z0-9 ]+", " ", str(value or ""))
+        return re.sub(r"\\s+", " ", value).strip()[:100]
 
-    keywords = set(re.findall(r"[a-z0-9]{3,}", f"{situation} {image_query}".lower()))
-    keywords -= {"the", "and", "for", "with", "when", "from", "this", "that", "photo", "image", "meme", "reaction", "funny", "person", "people", "someone"}
-    random.shuffle(candidates)
-    candidates.sort(key=lambda row: sum(word in row["title"].lower() for word in keywords), reverse=True)
-    # Concurrent bounded downloads avoid waiting on each dead image host in sequence.
-    pool = ThreadPoolExecutor(max_workers=4)
-    futures = [pool.submit(_download_candidate, item) for item in candidates[:6]]
-    try:
-        for future in as_completed(futures, timeout=5):
-            try:
-                result = future.result()
-                if result is not None:
-                    for pending in futures:
-                        if pending is not future:
-                            pending.cancel()
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    return result
-            except Exception:
-                continue
-    except TimeoutError:
-        pass
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    situation_query = clean_query(situation)
+    caption_query = clean_query(image_query)
+    queries = []
+    # Prefer the situation itself: AI-generated image descriptions can be vague or odd.
+    for query in (
+        f"{situation_query} reaction meme photo",
+        f"{caption_query} reaction photo",
+        f"{situation_query} funny relatable photo",
+    ):
+        query = clean_query(query)
+        if query and query.lower() not in [q.lower() for q in queries]:
+            queries.append(query)
+
+    candidates = []
+    seen = set()
+    for query in queries:
+        try:
+            with DDGS() as ddgs:
+                for item in ddgs.images(query, max_results=8):
+                    url = item.get("image") or item.get("thumbnail")
+                    if not _safe_public_image_url(url) or url in seen:
+                        continue
+                    seen.add(url)
+                    title = str(item.get("title") or item.get("alt") or item.get("source") or "")
+                    candidates.append({"url": url, "title": title})
+            if len(candidates) >= 12:
+                break
+        except Exception:
+            app.logger.info("Image search query failed; trying another relevant query")
+
+    if candidates:
+        keywords = set(re.findall(r"[a-z0-9]{3,}", f"{situation_query} {caption_query}".lower()))
+        keywords -= {"the", "and", "for", "with", "when", "from", "this", "that", "photo", "image", "meme", "reaction", "funny", "person", "people", "someone"}
+        random.shuffle(candidates)
+        candidates.sort(key=lambda row: sum(word in row["title"].lower() for word in keywords), reverse=True)
+
+        # Allow a little more time for real photo hosts; still bound concurrency and file size.
+        pool = ThreadPoolExecutor(max_workers=5)
+        futures = [pool.submit(_download_candidate, item) for item in candidates[:10]]
+        try:
+            for future in as_completed(futures, timeout=9):
+                try:
+                    result = future.result()
+                    if result is not None:
+                        for pending in futures:
+                            if pending is not future:
+                                pending.cancel()
+                        pool.shutdown(wait=False, cancel_futures=True)
+                        return result
+                except Exception:
+                    continue
+        except TimeoutError:
+            app.logger.info("Timed out while downloading image candidates")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    app.logger.warning("No usable real image found; using designed fallback background")
     return make_fallback(situation, style)
 
 def make_fallback(situation, style="Relatable"):
