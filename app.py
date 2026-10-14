@@ -260,39 +260,39 @@ def find_image(situation, style, image_query=""):
     return make_fallback(situation, style)
 
 def make_fallback(situation, style="Relatable"):
-    w, h = 1000, 700
+    """Create a clean, abstract fallback background; captions are drawn separately."""
+    w, h = 1080, 1080
     palettes = [
-        ((20, 18, 48), (255, 66, 166), (107, 85, 255)),
-        ((15, 39, 48), (39, 224, 190), (255, 132, 74)),
-        ((44, 20, 28), (255, 99, 71), (255, 197, 70)),
-        ((24, 20, 48), (177, 105, 255), (70, 170, 255)),
-        ((25, 35, 23), (165, 232, 94), (255, 112, 179)),
-        ((42, 24, 50), (255, 91, 194), (255, 182, 72))
+        ((18, 13, 34), (255, 79, 189), (122, 92, 255)),
+        ((10, 35, 39), (38, 220, 190), (255, 132, 74)),
+        ((36, 17, 31), (255, 99, 71), (255, 197, 70)),
+        ((20, 18, 48), (177, 105, 255), (70, 170, 255)),
+        ((18, 30, 24), (165, 232, 94), (255, 112, 179)),
+        ((35, 19, 45), (255, 91, 194), (255, 182, 72))
     ]
     bg, accent, accent2 = random.choice(palettes)
     im = Image.new("RGB", (w, h), bg)
     d = ImageDraw.Draw(im)
-    d.ellipse((620, -160, 1130, 350), fill=accent)
-    d.ellipse((-180, 440, 400, 1020), fill=accent2)
-    d.rounded_rectangle((70, 75, 930, 625), radius=48, fill=(18, 15, 32), outline=accent, width=5)
-    font = get_font(39)
-    small = get_font(23, False)
-    d.text((120, 125), "THE SITUATION:", font=small, fill=accent)
-    words = re.sub(r"\s+", " ", situation).split()
-    lines, line = [], ""
-    for word in words:
-        test = (line + " " + word).strip()
-        if d.textbbox((0, 0), test, font=font)[2] < 760:
-            line = test
-        else:
-            if line:
-                lines.append(line)
-            line = word
-    if line:
-        lines.append(line)
-    for i, ln in enumerate(lines[:6]):
-        d.text((120, 195 + i * 53), ln, font=font, fill=(255, 255, 255))
-    d.text((120, 555), f"{style.upper()} MODE  •  MEMELAB ✦", font=small, fill=accent2)
+
+    # Soft geometric shapes provide visual texture without competing with captions.
+    d.ellipse((690, -190, 1260, 380), fill=accent)
+    d.ellipse((-230, 750, 370, 1350), fill=accent2)
+    d.ellipse((760, 700, 1160, 1100), outline=accent2, width=12)
+    d.arc((130, 240, 950, 1040), start=200, end=335, fill=accent, width=8)
+    d.rounded_rectangle((85, 275, 995, 805), radius=60,
+                        fill=(15, 12, 28), outline=(65, 52, 87), width=3)
+
+    # Keep the central area intentionally quiet so the top and bottom captions
+    # stay readable and the fallback never repeats the user's situation as text.
+    center_font = get_font(180)
+    mark = "✦"
+    bbox = d.textbbox((0, 0), mark, font=center_font)
+    d.text(((w - (bbox[2] - bbox[0])) // 2, 420), mark,
+           font=center_font, fill=accent)
+    small = get_font(25, False)
+    label = "MEMELAB  /  " + str(style).upper()[:22]
+    bbox = d.textbbox((0, 0), label, font=small)
+    d.text(((w - (bbox[2] - bbox[0])) // 2, 750), label, font=small, fill=accent2)
     return im
 
 def get_font(size, bold=True):
