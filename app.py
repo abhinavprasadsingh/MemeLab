@@ -222,7 +222,7 @@ def find_image(situation, style, image_query=""):
     """Search several relevant photo queries and use the first valid real image."""
     def clean_query(value):
         value = re.sub(r"[^a-zA-Z0-9 ]+", " ", str(value or ""))
-        return re.sub(r"\\s+", " ", value).strip()[:100]
+        return re.sub(r"\s+", " ", value).strip()[:100]
 
     situation_query = clean_query(situation)
     caption_query = clean_query(image_query)
@@ -280,8 +280,8 @@ def find_image(situation, style, image_query=""):
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    app.logger.warning("No usable real image found; using designed fallback background")
-    return make_fallback(situation, style)
+    app.logger.error("No usable real photo found after all image searches")
+    raise RuntimeError("REAL_PHOTO_NOT_FOUND")
 
 def make_fallback(situation, style="Relatable"):
     """Create a clean, abstract fallback background; captions are drawn separately."""
@@ -491,7 +491,7 @@ def create():
             # Keep meme creation usable if Groq is temporarily unavailable or not configured.
             app.logger.exception("AI captions unavailable; using local fallback captions")
             short_situation = situation[:65].strip().rstrip(" .,!?:;")
-            top = f"When {short_situation}"[:120]
+            top = f"Me: {short_situation}"[:120]
             bottom = random.choice([
                 "My last two brain cells resigned",
                 "The consequences have entered the chat",
@@ -504,9 +504,14 @@ def create():
             image_query = f"{situation} reaction photo"
         try:
             image = find_image(situation, style, image_query)
+        except RuntimeError as image_error:
+            if str(image_error) == "REAL_PHOTO_NOT_FOUND":
+                return jsonify(error="I couldn’t find a usable real photo this time, so I didn’t create a fake placeholder. Please try again in a moment."), 503
+            app.logger.exception("Image lookup failed")
+            return jsonify(error="The real-photo search failed. Please try again in a moment."), 503
         except Exception:
-            app.logger.exception("Image lookup failed; using designed fallback")
-            image = make_fallback(situation, style)
+            app.logger.exception("Image lookup failed")
+            return jsonify(error="The real-photo search failed. Please try again in a moment."), 503
         rendered = render_meme(image, top, bottom, style)
         # Bound disk usage: remove files older than a day, then keep at most 149 old files.
         now = time.time()
